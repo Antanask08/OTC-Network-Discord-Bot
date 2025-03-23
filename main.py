@@ -58,7 +58,7 @@ async def rotate_status():
 
 def generate_dynamic_command(name):
     @commands.command(name=name)
-    async def _dynamic(ctx, amount: int = 5):  # default = 5
+    async def _dynamic(ctx, amount: int = 5):
         folder_path = os.path.join(BASE_DIR, name)
         used_path = os.path.join(folder_path, 'used')
         available = get_available_images(name)
@@ -68,17 +68,25 @@ def generate_dynamic_command(name):
             return
 
         selected = random.sample(available, min(amount, len(available)))
-        files = []
 
+        files = []
         for img in selected:
             img_path = os.path.join(folder_path, img)
-            # Force Discord to treat it as a previewable image by specifying filename
-            files.append(discord.File(img_path, filename=img))
+            # Ensure the file has a valid image extension
+            if not img.lower().endswith(('.png', '.jpg', '.jpeg', '.gif')):
+                continue
+
+            # Explicitly pass the filename
+            files.append(discord.File(fp=img_path, filename=os.path.basename(img)))
 
             # Move to used folder
             shutil.move(img_path, os.path.join(used_path, img))
 
-        await ctx.send(content=f"📦 `{ctx.author}` used `{name}` for {len(files)} code(s):", files=files)
+        if not files:
+            await ctx.send("⚠️ No valid image files found to send.")
+        else:
+            await ctx.send(content=f"📦 `{ctx.author}` used `{name}` for {len(files)} code(s):", files=files)
+
     return _dynamic
 
 @bot.command()
