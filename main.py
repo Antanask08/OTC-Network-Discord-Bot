@@ -114,30 +114,39 @@ async def upload(ctx, name: str):
         return
 
     attachment = ctx.message.attachments[0]
-    if not attachment.filename.endswith(".zip"):
+    if not attachment.filename.lower().endswith(".zip"):
         await ctx.send("Only zip files are supported.")
         return
 
-    # Download the zip file
+    # Download the zip file into memory
     async with aiohttp.ClientSession() as session:
         async with session.get(attachment.url) as resp:
             if resp.status != 200:
                 await ctx.send("Failed to download the zip file.")
                 return
-            data = await resp.read()
+            zip_data = await resp.read()
 
-    # Extract the zip file in-memory
-    with zipfile.ZipFile(io.BytesIO(data)) as zip_ref:
-        image_count = 0
-        for file in zip_ref.namelist():
-            if file.lower().endswith(('.png', '.jpg', '.jpeg', '.gif')):
-                source = zip_ref.open(file)
-                target_path = os.path.join(folder_path, os.path.basename(file))
-                with open(target_path, 'wb') as out_file:
-                    out_file.write(source.read())
-                image_count += 1
+    # Extract the zip safely in memory
+    try:
+        with zipfile.ZipFile(io.BytesIO(zip_data)) as zip_ref:
+            image_count = 0
+            for file_info in zip_ref.infolist():
+                filename = file_info.filename
+                if filename.lower().endswith(('.png', '.jpg', '.jpeg', '.gif')):
+                    with zip_ref.open(file_info) as source_file:
+                        # Prevent nested folders in zip from breaking paths
+                        safe_name = os.path.basename(filename)
+                        target_path = os.path.join(folder_path, safe_name)
 
-    await ctx.send(f"Uploaded `{image_count}` code(s) to `{name}` folder.")
+                        # Write image properly in binary mode
+                        with open(target_path, "wb") as f:
+                            f.write(source_file.read())
+
+                        image_count += 1
+
+            await ctx.send(f"✅ Uploaded `{image_count}` code(s) to `{name}` folder.")
+    except zipfile.BadZipFile:
+        await ctx.send("❌ That file is not a valid ZIP.")
     
 @bot.command()
 async def purge_used(ctx):
