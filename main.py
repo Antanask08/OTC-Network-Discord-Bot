@@ -185,4 +185,7 @@ async def help(ctx):
     embed.set_footer(text="All images are referred to as codes. Make sure to upload images to the correct folder!")
     await ctx.send(embed=embed)
 
-bot.run("MTMwNjM3MTE4MDQ1ODE1MTk0Nw.GwJ0mT.iqH8Xc_8zDzl50NlEr4XPGyvv2FcGV_EacHW2c")
+with open("settings.json", "r") as f:
+    settings = json.load(f)
+
+bot.run(settings["bot_token"])
