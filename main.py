@@ -72,7 +72,10 @@ def generate_dynamic_command(name):
 
         for img in selected:
             img_path = os.path.join(folder_path, img)
-            files.append(discord.File(img_path))
+            # Force Discord to treat it as a previewable image by specifying filename
+            files.append(discord.File(img_path, filename=img))
+
+            # Move to used folder
             shutil.move(img_path, os.path.join(used_path, img))
 
         await ctx.send(content=f"📦 `{ctx.author}` used `{name}` for {len(files)} code(s):", files=files)
