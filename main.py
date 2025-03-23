@@ -58,18 +58,24 @@ async def rotate_status():
 
 def generate_dynamic_command(name):
     @commands.command(name=name)
-    async def _dynamic(ctx, amount: int = 1):
+    async def _dynamic(ctx, amount: int = 5):  # default = 5
         folder_path = os.path.join(BASE_DIR, name)
         used_path = os.path.join(folder_path, 'used')
         available = get_available_images(name)
+
         if not available:
             await ctx.send(f"No more codes left in `{name}`.")
             return
+
         selected = random.sample(available, min(amount, len(available)))
+        files = []
+
         for img in selected:
             img_path = os.path.join(folder_path, img)
-            await ctx.send(file=discord.File(img_path))
+            files.append(discord.File(img_path))
             shutil.move(img_path, os.path.join(used_path, img))
+
+        await ctx.send(content=f"📦 `{ctx.author}` used `{name}` for {len(files)} code(s):", files=files)
     return _dynamic
 
 @bot.command()
