@@ -1,5 +1,6 @@
 import discord
 from discord.ext import commands, tasks
+from discord import app_commands
 import os
 import shutil
 import random
@@ -8,12 +9,13 @@ import itertools
 import aiohttp
 import zipfile
 import io
-
-bot = commands.Bot(command_prefix='!', intents=discord.Intents.all(), help_command=None)
+import sys
 
 COMMANDS_FILE = 'commands.json'
 BASE_DIR = 'codes'
 status_cycle = itertools.cycle(["Join OTC Group", "Making 1000s with OTC", "Cooking OTC"])
+
+TEST_GUILD = discord.Object(id=1353283544926916659)
 
 # Load existing commands
 if not os.path.exists(COMMANDS_FILE):
@@ -38,33 +40,33 @@ def get_available_images(folder):
     folder_path = os.path.join(BASE_DIR, folder)
     return [f for f in os.listdir(folder_path) if f.lower().endswith(('.png', '.jpg', '.jpeg', '.gif')) and os.path.isfile(os.path.join(folder_path, f))]
 
+class MyBot(commands.Bot):
+    async def setup_hook(self):
+        for cmd in load_commands():
+            self.tree.add_command(generate_dynamic_slash_command(cmd), guild=TEST_GUILD)
+        await self.tree.sync(guild=TEST_GUILD)
+
+bot = MyBot(command_prefix='!', intents=discord.Intents.all(), help_command=None)
+
 @bot.event
 async def on_ready():
     print(f"Bot ready as {bot.user}")
-    for cmd in load_commands():
-        bot.add_command(generate_dynamic_command(cmd))
     rotate_status.start()
-@bot.event
-async def on_command_error(ctx, error):
-    # Ignore unknown command errors (let other bots handle them)
-    if isinstance(error, commands.CommandNotFound):
-        return
-    else:
-        raise error  # You can also log this if you want
 
 @tasks.loop(seconds=20)
 async def rotate_status():
     await bot.change_presence(activity=discord.Game(next(status_cycle)), status=discord.Status.dnd)
 
-def generate_dynamic_command(name):
-    @commands.command(name=name)
-    async def _dynamic(ctx, amount: int = 5):
+def generate_dynamic_slash_command(name):
+    @app_commands.command(name=name, description=f"Send codes from {name}")
+    @app_commands.describe(amount="Number of codes to send")
+    async def _slash_command(interaction: discord.Interaction, amount: int = 5):
         folder_path = os.path.join(BASE_DIR, name)
         used_path = os.path.join(folder_path, 'used')
         available = get_available_images(name)
 
         if not available:
-            await ctx.send(f"No more codes left in `{name}`.")
+            await interaction.response.send_message(f"No more codes left in `{name}`.", ephemeral=True)
             return
 
         selected = random.sample(available, min(amount, len(available)))
@@ -72,61 +74,58 @@ def generate_dynamic_command(name):
         files = []
         for img in selected:
             img_path = os.path.join(folder_path, img)
-            # Ensure the file has a valid image extension
             if not img.lower().endswith(('.png', '.jpg', '.jpeg', '.gif')):
                 continue
-
-            # Explicitly pass the filename
             files.append(discord.File(fp=img_path, filename=os.path.basename(img)))
-
-            # Move to used folder
             shutil.move(img_path, os.path.join(used_path, img))
 
         if not files:
-            await ctx.send("⚠️ No valid image files found to send.")
+            await interaction.response.send_message("⚠️ No valid image files found to send.", ephemeral=True)
         else:
-            await ctx.send(content=f"📦 `{ctx.author}` used `{name}` for {len(files)} code(s):", files=files)
+            await interaction.response.send_message(content=f"📦 `{interaction.user}` used `{name}` for {len(files)} code(s):", files=files)
 
-    return _dynamic
-
-@bot.command()
-async def add(ctx, name: str):
+    return _slash_command
+@bot.tree.command(name="add", description="Add a new code set")
+@app_commands.describe(name="Name of the new folder")
+async def add(interaction: discord.Interaction, name: str):
     commands_list = load_commands()
     if name in commands_list:
-        await ctx.send(f"`{name}` already exists.")
+        await interaction.response.send_message(f"`{name}` already exists.")
         return
     create_folder(name)
     commands_list.append(name)
     save_commands(commands_list)
-    new_cmd = generate_dynamic_command(name)
-    bot.add_command(new_cmd)
-    await ctx.send(f"Added new code set `{name}` with command `!{name}`.")
-    
-@bot.command()
-async def upload(ctx, name: str):
-    if not ctx.message.attachments:
-        await ctx.send("Please attach a zip file.")
+    new_cmd = generate_dynamic_slash_command(name)
+    bot.tree.add_command(new_cmd, guild=TEST_GUILD)
+    await bot.tree.sync(guild=TEST_GUILD)
+    await interaction.response.send_message(f"Added new code set `{name}` with slash command `/{name}`. Restarting bot to apply...")
+
+    # Restart the bot process
+    os.execv(sys.executable, ['python'] + sys.argv)
+@bot.tree.command(name="upload", description="Upload a zip file of codes")
+@app_commands.describe(name="Name of the folder to upload into")
+async def upload(interaction: discord.Interaction, name: str):
+    if not interaction.attachments:
+        await interaction.response.send_message("Please attach a zip file.")
         return
 
     folder_path = os.path.join(BASE_DIR, name)
     if not os.path.exists(folder_path):
-        await ctx.send(f"The folder `{name}` does not exist. Use `!add {name}` first.")
+        await interaction.response.send_message(f"The folder `{name}` does not exist. Use `/add {name}` first.")
         return
 
-    attachment = ctx.message.attachments[0]
+    attachment = interaction.attachments[0]
     if not attachment.filename.lower().endswith(".zip"):
-        await ctx.send("Only zip files are supported.")
+        await interaction.response.send_message("Only zip files are supported.")
         return
 
-    # Download the zip file into memory
     async with aiohttp.ClientSession() as session:
         async with session.get(attachment.url) as resp:
             if resp.status != 200:
-                await ctx.send("Failed to download the zip file.")
+                await interaction.response.send_message("Failed to download the zip file.")
                 return
             zip_data = await resp.read()
 
-    # Extract the zip safely in memory
     try:
         with zipfile.ZipFile(io.BytesIO(zip_data)) as zip_ref:
             image_count = 0
@@ -134,22 +133,17 @@ async def upload(ctx, name: str):
                 filename = file_info.filename
                 if filename.lower().endswith(('.png', '.jpg', '.jpeg', '.gif')):
                     with zip_ref.open(file_info) as source_file:
-                        # Prevent nested folders in zip from breaking paths
                         safe_name = os.path.basename(filename)
                         target_path = os.path.join(folder_path, safe_name)
-
-                        # Write image properly in binary mode
                         with open(target_path, "wb") as f:
                             f.write(source_file.read())
-
                         image_count += 1
-
-            await ctx.send(f"✅ Uploaded `{image_count}` code(s) to `{name}` folder.")
+            await interaction.response.send_message(f"✅ Uploaded `{image_count}` code(s) to `{name}` folder.")
     except zipfile.BadZipFile:
-        await ctx.send("❌ That file is not a valid ZIP.")
-    
-@bot.command()
-async def purge_used(ctx):
+        await interaction.response.send_message("❌ That file is not a valid ZIP.")
+
+@bot.tree.command(name="purge_used", description="Purge all used codes")
+async def purge_used(interaction: discord.Interaction):
     commands_list = load_commands()
     deleted_total = 0
     for cmd in commands_list:
@@ -160,50 +154,41 @@ async def purge_used(ctx):
                 if os.path.isfile(file_path):
                     os.remove(file_path)
                     deleted_total += 1
-    await ctx.send(f"Purged `{deleted_total}` used code(s) from all folders.")
-@bot.command()
-async def delete(ctx, name: str):
+    await interaction.response.send_message(f"Purged `{deleted_total}` used code(s) from all folders.")
+
+@bot.tree.command(name="delete", description="Delete a code set")
+@app_commands.describe(name="Name of the code set to delete")
+async def delete(interaction: discord.Interaction, name: str):
     commands_list = load_commands()
     if name not in commands_list:
-        await ctx.send(f"`{name}` doesn't exist.")
+        await interaction.response.send_message(f"`{name}` doesn't exist.")
         return
     shutil.rmtree(os.path.join(BASE_DIR, name), ignore_errors=True)
-    bot.remove_command(name)
+    bot.tree.remove_command(name)
     commands_list.remove(name)
     save_commands(commands_list)
-    await ctx.send(f"Deleted `{name}` and its files.")
+    await bot.tree.sync(guild=TEST_GUILD)
+    await interaction.response.send_message(f"Deleted `{name}` and its files.")
 
-@bot.command()
-async def purge(ctx, name: str):
+@bot.tree.command(name="purge", description="Purge unsent codes from a set")
+@app_commands.describe(name="Name of the folder")
+async def purge(interaction: discord.Interaction, name: str):
     folder = os.path.join(BASE_DIR, name)
     if not os.path.exists(folder):
-        await ctx.send(f"`{name}` doesn't exist.")
+        await interaction.response.send_message(f"`{name}` doesn't exist.")
         return
     for f in get_available_images(name):
         os.remove(os.path.join(folder, f))
-    await ctx.send(f"Purged all unsent codes in `{name}`.")
+    await interaction.response.send_message(f"Purged all unsent codes in `{name}`.")
 
-@bot.command()
-async def stats(ctx):
+@bot.tree.command(name="stats", description="Show available codes in each folder")
+async def stats(interaction: discord.Interaction):
     commands_list = load_commands()
     msg = "**Active Code Sets:**\n"
     for cmd in commands_list:
         count = len(get_available_images(cmd))
         msg += f"`{cmd}`: {count} code(s) remaining\n"
-    await ctx.send(msg or "No active folders found.")
-
-@bot.command()
-async def help(ctx):
-    embed = discord.Embed(title="📘 OTC Bot Help", description="Here's how to use the bot!", color=discord.Color.blue())
-    embed.add_field(name="!add <name>", value="Create a new folder and command. Example: `!add nike`", inline=False)
-    embed.add_field(name="!<name> <amount>", value="Send a specific number of codes from that folder. Example: `!nike 3`", inline=False)
-    embed.add_field(name="!delete <name>", value="Delete a folder and remove the command. Example: `!delete nike`", inline=False)
-    embed.add_field(name="!purge <name>", value="Delete all unsent codes from a folder. Example: `!purge nike`", inline=False)
-    embed.add_field(name="!purge_used", value="Deletes all codes that were already sent (in `used` folders).", inline=False)
-    embed.add_field(name="!upload <name>", value="Upload a zip file of codes into the specified folder. Attach the .zip when using this command.", inline=False)
-    embed.add_field(name="!stats", value="See all active code folders and how many codes are left in each.", inline=False)
-    embed.set_footer(text="All images are referred to as codes. Make sure to upload images to the correct folder!")
-    await ctx.send(embed=embed)
+    await interaction.response.send_message(msg or "No active folders found.")
 
 with open("settings.json", "r") as f:
     settings = json.load(f)
